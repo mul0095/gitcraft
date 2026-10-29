@@ -41,6 +41,9 @@ pub struct Settings {
     /// Colour code in diffs and blame with VS Code's current theme, when it has one.
     pub vscode_colors: bool,
     pub profiles: Vec<Profile>,
+    pub ai_provider: String,
+    pub ai_model: String,
+    pub ai_language: String,
 }
 
 impl Default for Settings {
@@ -60,6 +63,9 @@ impl Default for Settings {
             check_updates: true,
             vscode_colors: true,
             profiles: Vec::new(),
+            ai_provider: "DeepSeek".to_owned(),
+            ai_model: "deepseek-flash".to_owned(),
+            ai_language: "English".to_owned(),
         }
     }
 }

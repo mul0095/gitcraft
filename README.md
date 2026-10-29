@@ -71,6 +71,10 @@ so your config, credentials and hooks apply as usual.
 - Commit box (Ctrl+Enter; with nothing staged it stages everything), _Amend last commit_
   (warns when the commit is already pushed), the identity you commit as, and saved identities to
   switch a repository to.
+- Generate a commit summary and description with AI. Use **AI settings** in the commit box to
+  select a provider, model and language and save its API key in the operating system's credential
+  store. Generation sends the relevant changes to that provider and may incur charges; large or
+  binary files may be omitted and long diffs truncated. Review the generated text before committing.
 - Undo / redo (Ctrl+Z / Ctrl+Y) of commits, amends, merges, rebases, pulls, resets,
   cherry-picks, reverts, checkouts, branch create / rename / delete, tags and stashes.
 

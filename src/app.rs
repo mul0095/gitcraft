@@ -927,6 +927,10 @@ impl eframe::App for App {
                     || self.manual_open
                     || self.clone_form.is_some();
                 repo.ui(ui);
+                if repo.ai_settings_changed {
+                    self.settings = Settings::get(&ctx);
+                    repo.ai_settings_changed = false;
+                }
                 // A worktree asked to be opened in its own tab.
                 if let Some(path) = repo.open_request.take() {
                     self.open_repo(&path, &ctx);

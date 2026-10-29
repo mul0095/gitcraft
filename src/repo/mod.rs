@@ -42,6 +42,7 @@ const LONG_OP: Duration = Duration::from_secs(4);
 
 /// Results coming back from background git calls.
 enum Msg {
+    AiDone(Result<(String, String), String>, String, String, bool),
     Loaded(Result<Box<Loaded>, String>),
     More(Result<Vec<Commit>, String>),
     Status(Result<WorkStatus, String>),
@@ -374,6 +375,11 @@ pub struct RepoTab {
 
     commit_summary: String,
     commit_body: String,
+    ai_busy: bool,
+    ai_settings: Option<Settings>,
+    ai_key: String,
+    ai_error: Option<String>,
+    pub ai_settings_changed: bool,
     amend: bool,
     dialog: Option<Dialog>,
     search: Search,
@@ -463,6 +469,11 @@ impl RepoTab {
             conflict: None,
             commit_summary: String::new(),
             commit_body: String::new(),
+            ai_busy: false,
+            ai_settings: None,
+            ai_key: String::new(),
+            ai_error: None,
+            ai_settings_changed: false,
             amend: false,
             dialog: None,
             search: Search::default(),
@@ -1220,6 +1231,101 @@ impl RepoTab {
         );
     }
 
+    fn generate_ai(&mut self, ctx: &egui::Context) {
+        let settings = Settings::get(ctx);
+        let path = self.path.clone();
+        let amend = self.amend;
+        let summary = self.commit_summary.clone();
+        let body = self.commit_body.clone();
+        self.ai_busy = true;
+        spawn(&self.tx, ctx, move || {
+            let result = (|| {
+                let entry = crate::ai::credential(&settings.ai_provider)?;
+                let key = entry.get_password().map_err(|_| {
+                    "No saved API key for this provider. Open AI settings.".to_owned()
+                })?;
+                let diff = crate::ai::changes(&path, amend)?;
+                let message = crate::ai::generate(&settings, &key, &diff)?;
+                if crate::ai::changes(&path, amend)? != diff {
+                    return Err("Changes were modified while generating. Please try again.".into());
+                }
+                Ok(message)
+            })();
+            Msg::AiDone(result, summary, body, amend)
+        });
+    }
+
+    fn ai_settings_ui(&mut self, ctx: &egui::Context) {
+        let Some(mut settings) = self.ai_settings.take() else {
+            return;
+        };
+        let mut close = false;
+        egui::Modal::new(egui::Id::new("ai-settings")).show(ctx, |ui| {
+            ui.set_width(430.0);
+            ui.heading("AI settings");
+            ui.label("Provider");
+            let previous = settings.ai_provider.clone();
+            egui::ComboBox::from_id_salt("ai-provider")
+                .selected_text(&settings.ai_provider)
+                .show_ui(ui, |ui| {
+                    for name in ["DeepSeek", "OpenAI", "Google Gemini", "Moonshot", "Kimi Code", "MiniMax", "OpenRouter", "Deploy (Hive)", "Anthropic"] {
+                        ui.selectable_value(&mut settings.ai_provider, name.to_owned(), name);
+                    }
+                });
+            if previous != settings.ai_provider {
+                settings.ai_model = crate::ai::default_model(&settings.ai_provider).into();
+                self.ai_key.clear();
+                self.ai_error = None;
+            }
+            ui.label("Model ID");
+            egui::ComboBox::from_id_salt("ai-model")
+                .selected_text(&settings.ai_model)
+                .show_ui(ui, |ui| {
+                    for model in crate::ai::suggested_models(&settings.ai_provider) {
+                        ui.selectable_value(&mut settings.ai_model, (*model).to_owned(), *model);
+                    }
+                });
+            ui.add(egui::TextEdit::singleline(&mut settings.ai_model).desired_width(f32::INFINITY));
+            ui.label("Message language");
+            egui::ComboBox::from_id_salt("ai-language").selected_text(&settings.ai_language).show_ui(ui, |ui| {
+                for language in ["English", "Ukrainian", "Polish"] {
+                    ui.selectable_value(&mut settings.ai_language, language.to_owned(), language);
+                }
+            });
+            ui.label("API key (leave blank to keep the saved key)");
+            ui.add(egui::TextEdit::singleline(&mut self.ai_key).password(true).desired_width(f32::INFINITY));
+            ui.small("Keys are stored in the system credential store, separately for each provider.");
+            ui.small("Generating sends the selected repository changes to the provider and may incur charges.");
+            ui.small("Large and binary files may be omitted; long changes may be truncated.");
+            if let Some(error) = &self.ai_error { ui.colored_label(egui::Color32::LIGHT_RED, error); }
+            ui.horizontal(|ui| {
+                if ui.button("Save").clicked() {
+                    if settings.ai_model.trim().is_empty() {
+                        self.ai_error = Some("Enter a model ID.".into());
+                    } else {
+                        let result = if self.ai_key.trim().is_empty() { Ok(()) } else {
+                            crate::ai::credential(&settings.ai_provider).and_then(|entry| entry.set_password(self.ai_key.trim()).map_err(|e| format!("Could not save key: {e}")))
+                        };
+                        match result {
+                            Ok(()) => { settings.set(ctx); self.ai_settings_changed = true; self.ai_key.clear(); close = true; }
+                            Err(error) => self.ai_error = Some(error),
+                        }
+                    }
+                }
+                if ui.button("Delete saved key").clicked() {
+                    match crate::ai::credential(&settings.ai_provider).and_then(|entry| entry.delete_credential().map_err(|e| format!("Could not delete key: {e}"))) {
+                        Ok(()) => { self.ai_key.clear(); self.ai_error = Some("Saved key deleted.".into()); }
+                        Err(error) => self.ai_error = Some(error),
+                    }
+                }
+                if ui.button("Cancel").clicked() { self.ai_key.clear(); close = true; }
+            });
+        });
+        if !close {
+            self.ai_settings = Some(settings);
+        }
+    }
+
     fn stash_push(&mut self, message: &str, ctx: &egui::Context) {
         let mut args = vec!["stash", "push", "--include-untracked"];
         if !message.trim().is_empty() {
@@ -1375,6 +1481,30 @@ impl RepoTab {
 
     fn handle(&mut self, msg: Msg, ctx: &egui::Context) {
         match msg {
+            Msg::AiDone(result, summary, body, amend) => {
+                self.ai_busy = false;
+                match result {
+                    Ok((new_summary, new_body))
+                        if self.commit_summary == summary
+                            && self.commit_body == body
+                            && self.amend == amend =>
+                    {
+                        self.commit_summary = new_summary;
+                        self.commit_body = new_body;
+                        self.status = Some((
+                            "AI message generated. Review it before committing.".into(),
+                            false,
+                        ));
+                    }
+                    Ok(_) => {
+                        self.status = Some((
+                            "Commit text changed during generation; your edits were kept.".into(),
+                            true,
+                        ))
+                    }
+                    Err(error) => self.status = Some((format!("AI: {error}"), true)),
+                }
+            }
             Msg::Loaded(result) => {
                 self.loading = false;
                 match result {

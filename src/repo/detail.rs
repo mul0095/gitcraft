@@ -546,6 +546,18 @@ impl RepoTab {
             }
         }
         ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            let generating = self.ai_busy;
+            if ui.add_enabled(idle && !generating && !rebasing, egui::Button::new(if generating { "Generating..." } else { "Generate with AI" })).on_hover_text("Send the relevant changes to the selected AI provider and fill the commit fields").clicked() {
+                self.generate_ai(ui.ctx());
+            }
+            if ui.button("AI settings").clicked() {
+                self.ai_settings = Some(crate::settings::Settings::get(ui.ctx()));
+                self.ai_key.clear();
+                self.ai_error = None;
+            }
+        });
+        self.ai_settings_ui(ui.ctx());
         let summary = ui.add(
             egui::TextEdit::singleline(&mut self.commit_summary)
                 .hint_text("Summary")
@@ -578,7 +590,10 @@ impl RepoTab {
         } else {
             "Stage all and commit".to_owned()
         };
-        let can = idle && !self.commit_summary.trim().is_empty() && self.work.conflicted.is_empty();
+        let can = idle
+            && !self.ai_busy
+            && !self.commit_summary.trim().is_empty()
+            && self.work.conflicted.is_empty();
         // Only from the message fields, so Ctrl+Enter in the terminal stays the shell's.
         let shortcut = (summary.has_focus() || body.has_focus())
             && ui.input(|i| i.modifiers.command && i.key_pressed(Key::Enter));
